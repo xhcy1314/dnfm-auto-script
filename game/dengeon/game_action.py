@@ -42,7 +42,12 @@ def calc_angle(hero_pos: Tuple[int, int], target_pos: Tuple[int, int]) -> float:
     return angle_deg
 
 
-def is_within_error_margin(coord1: Tuple[int, int], coord2: Tuple[int, int], x_error_margin: int = 100, y_error_margin: int = 50) -> bool:
+def is_within_error_margin(
+    coord1: Tuple[int, int],
+    coord2: Tuple[int, int],
+    x_error_margin: int = 100,
+    y_error_margin: int = 50,
+) -> bool:
     """
     检查两个坐标点之间的误差是否在指定范围内。
 
@@ -71,7 +76,9 @@ def calculate_distance(coord1: Tuple[int, int], coord2: Tuple[int, int]) -> floa
     return math.sqrt((coord1[0] - coord2[0]) ** 2 + (coord1[1] - coord2[1]) ** 2)
 
 
-def find_nearest_target_to_the_hero(hero: Tuple[int, int], target: List[Tuple[int, int]]):
+def find_nearest_target_to_the_hero(
+    hero: Tuple[int, int], target: List[Tuple[int, int]]
+):
     """
     寻找到距离英雄最近的目标
     :param hero: 英雄的坐标 (x, y)
@@ -123,7 +130,11 @@ class GameAction:
     """
     游戏控制
     """
-    LABLE_LIST = [line.strip() for line in open(os.path.join(PathManager.MODEL_PATH, "new.txt")).readlines()]
+
+    LABLE_LIST = [
+        line.strip()
+        for line in open(os.path.join(PathManager.MODEL_PATH, "new.txt")).readlines()
+    ]
 
     LABLE_INDEX = {}
     for i, lable in enumerate(LABLE_LIST):
@@ -158,7 +169,12 @@ class GameAction:
         result = self.yolo(frame)
         self.adb.picture_frame(frame, result)
 
-        lable_list = [line.strip() for line in open(os.path.join(PathManager.MODEL_PATH, "new.txt")).readlines()]
+        lable_list = [
+            line.strip()
+            for line in open(
+                os.path.join(PathManager.MODEL_PATH, "new.txt")
+            ).readlines()
+        ]
         result_dict = {}
         for lable in lable_list:
             result_dict[lable] = []
@@ -175,7 +191,7 @@ class GameAction:
             final_result[label] = {
                 "count": count,
                 "objects": objects,
-                "bottom_centers": bottom_centers
+                "bottom_centers": bottom_centers,
             }
 
         return final_result
@@ -215,7 +231,11 @@ class GameAction:
         判断房间是否存在怪物,如果存在怪物就把怪物坐标返回去，否则返回空
         :return:
         """
-        if map_info["Monster"]["count"] and map_info["Monster_ds"]["count"] and map_info["Monster_szt"]["count"] == 0:
+        if (
+            map_info["Monster"]["count"]
+            and map_info["Monster_ds"]["count"]
+            and map_info["Monster_szt"]["count"] == 0
+        ):
             return []
         else:
             monster = []
@@ -268,8 +288,8 @@ class GameAction:
         :param direction:
         :return:
         """
-        logger.info('移动到下一个房间')
-        
+        logger.info("移动到下一个房间")
+
         start_move = False
         hlx, hly = 0, 0
         move_count = 0
@@ -279,15 +299,22 @@ class GameAction:
             # 下一帧未生成 或 不存在 退出循环
             if screen is None:
                 continue
-            
-            ada_image = cv.adaptiveThreshold(cv.cvtColor(screen, cv.COLOR_BGR2GRAY), 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 13, 3)
+
+            ada_image = cv.adaptiveThreshold(
+                cv.cvtColor(screen, cv.COLOR_BGR2GRAY),
+                255,
+                cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv.THRESH_BINARY_INV,
+                13,
+                3,
+            )
             # 屏幕变黑色 则认为过图成功
             if np.sum(ada_image) == 0:
                 logger.info("过图成功")
                 self.adb.touch_end()
                 self.mov_to_next_room()
                 return True
-              
+
             # 获取当前地图信息
             map_info = self.get_map_info(screen, show=True)
             # 判断是否满足进入下一个房间的条件
@@ -296,7 +323,7 @@ class GameAction:
             if not conditions:
                 self.adb.touch_end()
                 return False, reason
-              
+
             # 如果没有找到英雄 则随机移动 并退出当前循环
             if map_info["hero"]["count"] == 0:
                 logger.info("没有找到英雄")
@@ -305,43 +332,42 @@ class GameAction:
             # 获取英雄坐标
             else:
                 hx, hy = map_info["hero"]["bottom_centers"][0]
-                
+
             # 没有箭头 随机移动一下
             if map_info["go"]["count"] == 0:
-              logger.info("没有找到箭头标记")
-              # 尝试查找大箭头 go_u 或 go_d
-              alternative_marks = None
-              if map_info["go_u"]["count"] > 0:
-                  alternative_marks = map_info["go_u"]["bottom_centers"]
-                  logger.info("使用 go_u 标记")
-              elif map_info["go_d"]["count"] > 0:
-                  alternative_marks = map_info["go_d"]["bottom_centers"]
-                  logger.info("使用 go_d 标记")
-              elif map_info["go_r"]["count"] > 0:
-                  alternative_marks = map_info["go_r"]["bottom_centers"]
-                  logger.info("使用 go_r 标记")
-              
-              if alternative_marks:
-                  # 如果找到替代的标记，使用这些标记
-                  marks = alternative_marks
-              else:
-                  # 如果没有找到替代标记，执行随机移动
-                  self.random_move()
-                  continue
+                logger.info("没有找到箭头标记")
+                # 尝试查找大箭头 go_u 或 go_d
+                alternative_marks = None
+                if map_info["go_u"]["count"] > 0:
+                    alternative_marks = map_info["go_u"]["bottom_centers"]
+                    logger.info("使用 go_u 标记")
+                elif map_info["go_d"]["count"] > 0:
+                    alternative_marks = map_info["go_d"]["bottom_centers"]
+                    logger.info("使用 go_d 标记")
+                elif map_info["go_r"]["count"] > 0:
+                    alternative_marks = map_info["go_r"]["bottom_centers"]
+                    logger.info("使用 go_r 标记")
+
+                if alternative_marks:
+                    # 如果找到替代的标记，使用这些标记
+                    marks = alternative_marks
+                else:
+                    # 如果没有找到替代标记，执行随机移动
+                    self.random_move()
+                    continue
             # 使用小箭头坐标
             else:
-              marks = map_info["go"]["bottom_centers"]
+                marks = map_info["go"]["bottom_centers"]
             closest_mark = find_nearest_target_to_the_hero((hx, hy), marks)
             # 没有坐标异常时退出
             if closest_mark is None:
                 logger.info("没有找到距离英雄最近的坐标")
                 continue
             mx, my = closest_mark
-            
-            
+
             # 计算出英雄和目标的角度
             angle = calc_angle((hx, hy), (mx, my))
-            
+
             # 按压轮盘
             if not start_move:
                 self.hero_ctrl.touch_roulette_wheel()
@@ -350,22 +376,19 @@ class GameAction:
             else:
                 self.hero_ctrl.swipe_roulette_wheel(angle)
 
-            
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     adb = ScrcpyADB()
     # 将 display_queue_frames 放入单独的线程中执行
     # thread = threading.Thread(target=adb.display_queue_frames)
     # thread.start()
-    
-    action = GameAction('hong_yan', adb)
+
+    action = GameAction("hong_yan", adb)
     # for i in range(5):
     action.mov_to_next_room()
-    
-    adb.display_queue_frames()
-    
-    
+
+    # adb.display_queue_frames()
+
     # action.mov_to_next_room()
     #     # action.get_items()
     #     time.sleep(3)
