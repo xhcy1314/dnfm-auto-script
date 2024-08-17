@@ -87,9 +87,9 @@ class YoloV5s:
 
         # original pretrained model from https://github.com/ultralytics/yolov5
         # the ncnn model https://github.com/nihui/ncnn-assets/tree/master/models
-        param_path = os.path.join(PathManager.MODEL_PATH, "new.param")
-        bin_path = os.path.join(PathManager.MODEL_PATH, "new.bin")
-        classes_path = os.path.join(PathManager.MODEL_PATH, "new.txt")
+        param_path = os.path.join(PathManager.MODEL_PATH, "new2.param")
+        bin_path = os.path.join(PathManager.MODEL_PATH, "new2.bin")
+        classes_path = os.path.join(PathManager.MODEL_PATH, "new2.txt")
 
         # 确保文件存在
         if not os.path.exists(param_path):
