@@ -14,6 +14,10 @@ class HeroControlBase:
 
     def __init__(self, adb: ScrcpyADB):
         self.adb = adb
+        self.move_touch = "none"
+        self.attack_touch = "none"
+        rx, ry = roulette_wheel
+        self.last_move = [rx, ry]
 
     @staticmethod
     def calc_mov_point(angle: float) -> Tuple[int, int]:
@@ -24,7 +28,7 @@ class HeroControlBase:
         """
         # 手机是横屏的，计算角度是按照横屏去计算的，所以这里要修改一下坐标判断
         rx, ry = roulette_wheel
-        r = 125
+        r = 140
 
         # 将角度转换为弧度
         angle_rad = math.radians(angle)
@@ -91,8 +95,9 @@ class HeroControlBase:
         :return:
         """
         x, y = attack
+        print(attack)
         logger.info("执行普通攻击")
-        self.adb.touch((x, y), t)
+        self.adb.touch((x, y), t, 3)
 
     def skill_attack(self, skill_coordinate: Tuple[int, int], t: float or int = 0.1):
         """
@@ -125,12 +130,52 @@ class HeroControlBase:
         logger.info("执行觉醒攻击")
         self.adb.touch((x, y), t)
 
+    def moveV2(self, angle: int, t: float = 0):
+        # 计算轮盘x, y坐标
+        x, y = self.calc_mov_point(angle)
+        if angle == 0:
+            if self.move_touch == "none":
+              return
+            self.move_touch = "none"
+            self.adb.touch_end(self.last_move, 1)
+            return
+        else:
+            if self.move_touch == "none":
+                self.move_touch = "start"
+                rx, ry = roulette_wheel
+                self.adb.touch_start([rx, ry], 1)
+                time.sleep(0.1)
+                self.adb.touch_move([x, y], 1)
+                self.last_move = [x, y]
+            elif self.move_touch == "start":
+                  self.move_touch = "move"
+                  self.adb.touch_move([x, y], 1)
+                  self.last_move = [x, y]
+            else:
+                self.adb.touch_move([x, y], 1)
+                self.last_move = [x, y]
+            if(t > 0):
+              time.sleep(t)
+              self.move_touch = "none"
+              self.adb.touch_end(self.last_move, 1)
+    def move_to_monster(self, angle:int, hero_pos, close_monster_point):
+        if abs(hero_pos[1]-close_monster_point[1])<0.1 and abs(hero_pos[0]-close_monster_point[0])<0.15:
+            self.moveV2(0)
+            return True
+        else:
+            self.moveV2(angle)
+                
+    def reset(self):
+            self.moveV2(0)
+            # self.attack(False)
 
-if __name__ == '__main__':
-    ctl = HeroControlBase(ScrcpyADB())
-# ctl.move(180, 3)
-# time.sleep(0.3)
-# ctl.attack()
+if __name__ == "__main__":
+    adb = ScrcpyADB()
+    ctl = HeroControlBase(adb)
+    ctl.moveV2(37.642947135769795)
+    ctl.moveV2(38.60530363600795)
+    ctl.moveV2(39.16229125411959)
+    ctl.moveV2(9.69641478081771)
 # time.sleep(0.3)
 # ctl.move(270, 5)
 # time.sleep(0.3)

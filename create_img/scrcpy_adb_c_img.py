@@ -15,8 +15,8 @@ class ScrcpyADB:
         if not devices:
             raise Exception("No devices connected")
         adb.connect("127.0.0.1:5555")
-
-        self.client = scrcpy.Client(device=devices, max_width=640, max_fps=5)
+        # self.client = scrcpy.Client(device=devices, max_width=600, max_fps=10)
+        self.client = scrcpy.Client(device=devices, max_width=1168, max_fps=30)
         self.client.add_listener(scrcpy.EVENT_FRAME, self.on_frame)
         self.client.start(threaded=True)
 

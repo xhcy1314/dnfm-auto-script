@@ -7,6 +7,8 @@ import torch
 import threading
 import time
 import onnxruntime as ort
+import json
+from utils.logger import logger
 
 
 def resize_img(im):
@@ -328,24 +330,22 @@ def non_max_suppression(
 
 class YOLOv5:
     def __init__(self, model_path, image_queue, infer_queue, show_queue):
-        self.label = [
-            "hero",
-            "monster",
-            "go",
-            "go_r",
-            "go_d",
-            "go_t",
-            "go_l",
-            "opendoor_r",
-            "opendoor_l",
-            "opendoor_t",
-            "opendoor_d",
-            "opendoor_boss",
-            "szt",
-            "item",
-            "corpse",
-            "again",
-            "over_card",
+        self.labels = [
+          'hero',
+          'monster',
+          'monster_szt',
+          'go',
+          'opendoor_r',
+          'opendoor_l',
+          'opendoor_t',
+          'opendoor_d',
+          'item',
+          'card',
+          'guide',
+          'repair',
+          'again',
+          'comeback',
+          'zeroPL'
         ]
         self.path = model_path
         self.image_queue = image_queue
@@ -356,10 +356,13 @@ class YOLOv5:
         self.thread.start()
 
     def thread(self):
-        session = ort.InferenceSession(self.path, providers=["CPUExecutionProvider"])
+        session = ort.InferenceSession(self.path, providers=["CUDAExecutionProvider"])
+        # session = ort.InferenceSession(self.path, providers=["CPUExecutionProvider"])
+
         # 获取模型输入输出信息
         input_name = session.get_inputs()[0].name
         output_names = [output.name for output in session.get_outputs()]
+        
         while True:
             if self.image_queue.empty():
                 time.sleep(0.005)
@@ -383,6 +386,9 @@ class YOLOv5:
             output[:, 1] = (output[:, 1] - top_pad) / (640 - top_pad * 2)
             output[:, 2] = output[:, 2] / 640
             output[:, 3] = (output[:, 3] - top_pad) / (640 - top_pad * 2)
+            
+            # logger.info(json.dumps(output_dict, indent=4) + " ----output")
+            # print(output)
             self.infer_queue.put([img, output])
             self.show_queue.put([img, output])
 

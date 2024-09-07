@@ -8,7 +8,6 @@ import scrcpy
 from adbutils import adb
 import cv2 as cv
 
-from device_manager.constant import TARGET_COLOUR
 from utils.logger import logger
 from utils.path_manager import PathManager
 
@@ -22,7 +21,7 @@ class ScrcpyADB:
     连接设备，并启动 scrcpy
     """
 
-    def __init__(self, max_width=1168, max_fps=30):
+    def __init__(self, max_width=1168, max_fps=15):
         devices = adb.device_list()[0]
         if not devices:
             raise Exception("No devices connected")
@@ -68,44 +67,54 @@ class ScrcpyADB:
             except Exception as e:
                 logger.error(e)
 
-    def touch_start(self, coordinate: Tuple[int or float, int or float]):
+    def touch_start(self, coordinate: Tuple[int or float, int or float], id: int = -1):
         """
         触摸屏幕
         :param coordinate:坐标
         :return:
         """
         x, y = coordinate
-        self.client.control.touch(int(x), int(y), scrcpy.ACTION_DOWN)
+        # logger.info('moveV2 ACTION_DOWN')
+        # logger.info(id)
+        # logger.info(coordinate)
+        self.client.control.touch(int(x), int(y), scrcpy.ACTION_UP, id)
+        time.sleep(0.1)
+        self.client.control.touch(int(x), int(y), scrcpy.ACTION_DOWN, id)
 
-    def touch_move(self, coordinate: Tuple[int or float, int or float]):
+    def touch_move(self, coordinate: Tuple[int or float, int or float], id: int = -1):
         """
         触摸拖动
         :param coordinate: 坐标
         :return:
         """
+        # logger.info('moveV2 ACTION_MOVE')
         x, y = coordinate
-        self.client.control.touch(int(x), int(y), scrcpy.ACTION_MOVE)
+        self.client.control.touch(int(x), int(y), scrcpy.ACTION_MOVE, id)
 
-    def touch_end(self, coordinate: Tuple[int or float, int or float] = (0, 0)):
+    def touch_end(
+        self, coordinate: Tuple[int or float, int or float] = (0, 0), id: int = -1
+    ):
         """
         释放触摸
         :param coordinate:坐标
         :return:
         """
+        # logger.info('moveV2 ACTION_UP')
+        # logger.info(id)
         x, y = coordinate
-        self.client.control.touch(int(x), int(y), scrcpy.ACTION_UP)
+        self.client.control.touch(int(x), int(y), scrcpy.ACTION_UP, id)
 
     def touch(
-        self, coordinate: Tuple[int or float, int or float], t: int or float = 0.5
+        self, coordinate: Tuple[int or float, int or float], t: int or float = 0.5, id: int = -1
     ):
         """
         :param coordinate:坐标
         :param t:按压时间
         :return:
         """
-        self.touch_start(coordinate)
+        self.touch_start(coordinate, id)
         time.sleep(t)
-        self.touch_end(coordinate)
+        self.touch_end(coordinate, id)
 
     def swipe(
         self,
@@ -127,25 +136,4 @@ class ScrcpyADB:
 
 
 if __name__ == "__main__":
-    this = ScrcpyADB()
-    while True:
-        if this.show_queue.empty():
-            time.sleep(0.001)
-            continue
-        image,result = this.show_queue.get()
-        for boxs in result:
-            # 把坐标从 float 类型转换为 int 类型
-            det_x1, det_y1, det_x2, det_y2,conf,label = boxs
-            # 裁剪目标框对应的图像640*img1/img0 
-            x1 = int(det_x1*image.shape[1])
-            y1 = int(det_y1*image.shape[0])
-            x2 = int(det_x2*image.shape[1])
-            y2 = int(det_y2*image.shape[0])
-            # 绘制矩形边界框
-            cv.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv.putText(image, "{:.2f}".format(conf), (int(x1), int(y1-10)), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
-            cv.putText(image, this.yolo.label[int(label)], (int(x1), int(y1-30)), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
-        image = cv.resize(image,(1800,int(image.shape[0]*1800/image.shape[1])))
-        cv.imshow("Image", image)
-        cv.waitKey(1)
-        
+    adb = ScrcpyADB()

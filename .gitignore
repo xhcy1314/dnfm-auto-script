@@ -1,3 +1,4 @@
 /logs
 /create_img/img
-/__pycache__
+*/__pycache__
+/model

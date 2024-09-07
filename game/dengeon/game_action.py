@@ -1,114 +1,194 @@
-import os.path
-import random
-import sys
-from typing import Tuple, List
 
-from utils.yolov5 import YoloV5s
+import random
+
 from utils.logger import logger
 from device_manager.scrcpy_adb import ScrcpyADB
 from game.hero_control.hero_control import get_hero_control
-from utils.path_manager import PathManager
 import time
 import cv2 as cv
-from ncnn.utils.objects import Detect_Object
 import math
 import numpy as np
 import threading
+from collections import deque
+from data_const.coordinate import *
 
 
-def get_detect_obj_bottom(obj: Detect_Object) -> Tuple[int, int]:
-    """
-    获取检测对象的底部坐标
-    :param obj:
-    :return:
-    """
-    return int(obj.rect.x + obj.rect.w / 2), int(obj.rect.y + obj.rect.h)
+def find_highest_confidence(box):
+    if len(box) == 0:
+        return None  # 如果列表为空，返回 None
+    return max(box, key=lambda item: item[4])
 
 
-def calc_angle(hero_pos: Tuple[int, int], target_pos: Tuple[int, int]) -> float:
-    """
-    计算英雄和目标的角度
-    角度从正 x 轴（向右方向）逆时针计算
-    :return:
-    """
-    # 计算两点之间的水平和垂直距离,这里需要注意的是，手机玩游戏的时候是横屏，所以 X 坐标和 Y 坐标是需要对调的
-    delta_y = hero_pos[1] - target_pos[1]
-    delta_x = hero_pos[0] - target_pos[0]
-
-    # 计算角度（以正右方向为0度，正上方为90度）
-    angle_rad = math.atan2(delta_y, delta_x)
-    angle_deg = 180 - int(angle_rad * 180 / math.pi)
-
-    return angle_deg
+def calculate_center(box):  # 计算矩形框的底边中心点坐标
+    return ((box[0] + box[2]) / 2, box[3])
 
 
-def is_within_error_margin(
-    coord1: Tuple[int, int],
-    coord2: Tuple[int, int],
-    x_error_margin: int = 100,
-    y_error_margin: int = 50,
-) -> bool:
-    """
-    检查两个坐标点之间的误差是否在指定范围内。
-
-    :param coord1: 第一个坐标点 (x1, y1)
-    :param coord2: 第二个坐标点 (x2, y2)
-    :param x_error_margin: x 坐标的误差范围
-    :param y_error_margin: y 坐标的误差范围
-    :return: 如果误差在范围内返回 True，否则返回 False
-    """
-    x1, y1 = coord1
-    x2, y2 = coord2
-
-    x_error = abs(x1 - x2)
-    y_error = abs(y1 - y2)
-
-    return x_error <= x_error_margin and y_error <= y_error_margin
+def calculate_origin_center(box):
+    # 计算矩形框的中心点坐标
+    center_x = (box[0] + box[2]) / 2
+    center_y = (box[1] + box[3]) / 2
+    return (center_x, center_y)
 
 
-def calculate_distance(coord1: Tuple[int, int], coord2: Tuple[int, int]) -> float:
-    """
-    计算两个坐标之间的欧几里得距离
-    :param coord1: 第一个坐标 (x, y)
-    :param coord2: 第二个坐标 (x, y)
-    :return: 距离
-    """
-    return math.sqrt((coord1[0] - coord2[0]) ** 2 + (coord1[1] - coord2[1]) ** 2)
+def get_dom_xy_px(box, image):
+    x, y = calculate_origin_center(box)
+    return [x * image.shape[1], y * image.shape[0]]
 
 
-def find_nearest_target_to_the_hero(
-    hero: Tuple[int, int], target: List[Tuple[int, int]]
-):
-    """
-    寻找到距离英雄最近的目标
-    :param hero: 英雄的坐标 (x, y)
-    :param target: 怪物坐标的列表 [(x1, y1), (x2, y2), ...]
-    :return: 距离英雄最近的怪物坐标 (x, y)
-    """
-    if not target:
-        return None
-
-    closest_target = min(target, key=lambda t: calculate_distance(hero, t))
-    return closest_target
+def calculate_distance(center1, center2):  # 计算两个底边中心点之间的欧几里得距离
+    return math.sqrt((center1[0] - center2[0]) ** 2 + (center1[1] - center2[1]) ** 2)
 
 
-def calculate_direction_based_on_angle(angle: int or float):
-    """
-    根据角度计算方向
-    :param angle:
-    :return:
-    """
-    if 0 <= angle <= 360:
-        if 0 <= angle <= 90:
-            return ["up", "right"]
-        elif 90 < angle <= 180:
-            return ["up", "left"]
-        elif 180 < angle <= 270:
-            return ["down", "left"]
-        else:
-            return ["down", "right"]
-    else:
-        return None
+def find_closest_box(boxes, target_box):  # 计算目标框的中心点
+    target_center = calculate_center(target_box)  # 初始化最小距离和最近的box
+    min_distance = float("inf")
+    closest_box = None  # 遍历所有box，找出最近的box
+    for box in boxes:
+        center = calculate_center(box)
+        distance = calculate_distance(center, target_center)
+        if distance < min_distance:
+            min_distance = distance
+            closest_box = box
+    return closest_box, min_distance
+
+
+def find_farthest_box(boxes, target_box):
+    target_center = calculate_center(target_box)  # 计算目标框的中心点
+    max_distance = -float("inf")  # 初始化最大距离和最远的box
+    farthest_box = None
+    for box in boxes:  # 遍历所有box，找出最远的box
+        center = calculate_center(box)
+        distance = calculate_distance(center, target_center)
+        if distance > max_distance:
+            max_distance = distance
+            farthest_box = box
+    return farthest_box, max_distance
+
+
+def find_closest_or_second_closest_box(boxes, point):
+    """找到离目标框最近的框或第二近的框"""
+    if len(boxes) < 2:
+        # 如果框的数量少于两个，直接返回最近的框
+        target_center = point
+        closest_box = None
+        min_distance = float("inf")
+        for box in boxes:
+            center = calculate_center(box)
+            distance = calculate_distance(center, target_center)
+            if distance < min_distance:
+                min_distance = distance
+                closest_box = box
+        return closest_box, distance
+    # 如果框的数量不少于两个
+    target_center = point
+    # 初始化最小距离和最近的框
+    min_distance_1 = float("inf")
+    closest_box_1 = None
+    # 初始化第二近的框
+    min_distance_2 = float("inf")
+    closest_box_2 = None
+    for box in boxes:
+        center = calculate_center(box)
+        distance = calculate_distance(center, target_center)
+        if distance < min_distance_1:
+            # 更新第二近的框
+            min_distance_2 = min_distance_1
+            closest_box_2 = closest_box_1
+            # 更新最近的框
+            min_distance_1 = distance
+            closest_box_1 = box
+        elif distance < min_distance_2:
+            # 更新第二近的框
+            min_distance_2 = distance
+            closest_box_2 = box
+    # 返回第二近的框
+    return closest_box_2, min_distance_2
+
+
+def find_close_point_to_box(boxes, point):  # 找距离点最近的框
+    target_center = point  # 初始化最小距离和最近的box
+    min_distance = float("inf")
+    closest_box = None  # 遍历所有box，找出最近的box
+    for box in boxes:
+        center = calculate_center(box)
+        distance = calculate_distance(center, target_center)
+        if distance < min_distance:
+            min_distance = distance
+            closest_box = box
+    return closest_box, min_distance
+
+
+def calculate_point_to_box_angle(point, box):  # 计算点到框的角度
+    center1 = point
+    center2 = calculate_center(box)
+    delta_x = center2[0] - center1[0]  # 计算相对角度（以水平轴为基准）
+    delta_y = center2[1] - center1[1]
+    angle = math.atan2(delta_y, delta_x)
+    angle_degrees = math.degrees(angle)  # 将角度转换为度数
+    adjusted_angle = -angle_degrees
+    return adjusted_angle
+
+
+def calculate_angle(box1, box2):
+    center1 = calculate_center(box1)
+    center2 = calculate_center(box2)
+    delta_x = center2[0] - center1[0]  # 计算相对角度（以水平轴为基准）
+    delta_y = center2[1] - center1[1]
+    angle = math.atan2(delta_y, delta_x)
+    angle_degrees = math.degrees(angle)  # 将角度转换为度数
+    adjusted_angle = -angle_degrees
+    return adjusted_angle
+
+
+def calculate_gate_angle(point, gate):
+    center1 = point
+    center2 = ((gate[0] + gate[2]) / 2, (gate[3] - gate[1]) * 0.65 + gate[1])
+    delta_x = center2[0] - center1[0]  # 计算相对角度（以水平轴为基准）
+    delta_y = center2[1] - center1[1]
+    angle = math.atan2(delta_y, delta_x)
+    angle_degrees = math.degrees(angle)  # 将角度转换为度数
+    adjusted_angle = -angle_degrees
+    return adjusted_angle
+
+
+def calculate_angle_to_box(point1, point2):  # 计算点到点的角度
+    angle = math.atan2(
+        point2[1] - point1[1], point2[0] - point1[0]
+    )  # 计算从点 (x, y) 到中心点的角度
+    angle_degrees = math.degrees(angle)  # 将角度转换为度数
+    adjusted_angle = -angle_degrees
+    return adjusted_angle
+
+
+def calculate_iou(box1, box2):
+    # 计算相交区域的坐标
+    inter_x_min = max(box1[0], box2[0])
+    inter_y_min = max(box1[1], box2[1])
+    inter_x_max = min(box1[2], box2[2])
+    inter_y_max = min(box1[3], box2[3])
+    # 计算相交区域的面积
+    inter_area = max(0, inter_x_max - inter_x_min) * max(0, inter_y_max - inter_y_min)
+    # 计算每个矩形的面积和并集面积
+    box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union_area = box1_area + box2_area - inter_area
+    # 计算并返回IoU
+    return inter_area / union_area if union_area > 0 else 0
+
+
+def normalize_angle(angle):  # 将角度规范化到 [-180, 180) 的范围内
+    angle = angle % 360
+    if angle >= 180:
+        angle -= 360
+    return angle
+
+
+def are_angles_on_same_side_of_y(angle1, angle2):  # 规范化角度
+    norm_angle1 = normalize_angle(angle1)
+    norm_angle2 = normalize_angle(angle2)  # 检查是否在 y 轴的同侧
+    return (norm_angle1 >= 0 and norm_angle2 >= 0) or (
+        norm_angle1 < 0 and norm_angle2 < 0
+    )
 
 
 def get_door_coordinate_by_direction(direction):
@@ -118,7 +198,7 @@ def get_door_coordinate_by_direction(direction):
     :return:
     """
     direction_to_direction = {
-        "up": "opendoor_u",
+        "top": "opendoor_t",
         "down": "opendoor_d",
         "left": "opendoor_l",
         "right": "opendoor_r",
@@ -126,28 +206,274 @@ def get_door_coordinate_by_direction(direction):
     return direction_to_direction.get(direction, "")
 
 
+# 判断图片是否接近黑色
+def is_image_almost_black(image, threshold=30):  # 读取图片
+    image = cv.cvtColor(image, cv.IMREAD_GRAYSCALE)  # 检查图片是否成功读取
+    num_black_pixels = np.sum(image < threshold)
+    total_pixels = image.size
+    black_pixel_ratio = (
+        num_black_pixels / total_pixels
+    )  # 定义一个比例阈值来判断图片是否接近黑色
+    return black_pixel_ratio > 0.6
+
+
+def annotate_output_with_labels(output, output_dict, labels):
+    filtered_output = output[output[:, 4] > 0.35, :6]
+    # 遍历输出并分类
+    for detection in filtered_output:
+        detection_list = detection[:5].tolist()  # 提取前5个数值（检测框坐标和置信度）
+        category_index = int(detection[5].item())  # 获取类别索引
+        label = labels[category_index]  # 获取对应的标签名称
+        output_dict[label].append(detection_list)  # 添加检测框到相应的标签下
+
+
+map_info = {
+    "bwj": {
+        "cn_name": "布万加",
+        "boss_path": [
+            [0, 0],
+            [0, -1],
+            [1, -1],
+            [2, -1],
+            [2, 0],
+            [1, 0],
+            [2, 0],
+            [3, 0],
+            [4, 0],
+            [5, 0],
+        ],
+        "boss_gate": [
+            "down",
+            "right",
+            "right",
+            "top",
+            "left",
+            "right",
+            "right",
+            "right",
+            "right",
+            "right",
+        ],
+        "full_figure_path": [
+            [0, 0],
+            [0, -1],
+            [1, -1],
+            [2, -1],
+            [2, 0],
+            [1, 0],
+            [2, 0],
+            [2, 1],
+            [1, 1],
+            [0, 1],
+            [1, 1],
+            [2, 1],
+            [2, 0],
+            [3, 0],
+            [4, 0],
+            [5, 0],
+        ],
+        "szt": [1, 0],
+    }
+}
+
+
 class GameAction:
     """
     游戏控制
     """
 
-    LABLE_LIST = [
-        line.strip()
-        for line in open(os.path.join(PathManager.MODEL_PATH, "new.txt")).readlines()
-    ]
-
-    LABLE_INDEX = {}
-    for i, lable in enumerate(LABLE_LIST):
-        LABLE_INDEX[i] = lable
-
-    def __init__(self, hero_name: str, adb: ScrcpyADB):
-        self.hero_ctrl = get_hero_control(hero_name, adb)
-        self.yolo = YoloV5s(num_threads=4, use_gpu=True)
+    def __init__(self, hero_name: str, adb: ScrcpyADB, next):
         self.adb = adb
-        self.room_index = 0
+        self.next = next
+        self.hero_ctrl = get_hero_control(hero_name, adb)
+        self.map_path = map_info["bwj"]["boss_path"]
+        self.map_gate = map_info["bwj"]["boss_gate"]
+        self.room_index = 0  # 房间下标
+        self.pre_state = False  # 处理过图逻辑锁
         self.special_room = False  # 狮子头
         self.boss_room = False  # boss
         self.next_room_direction = "down"  # 下一个房间的方向
+        self.detect_retry = False
+        self.kashi = 0
+        self.thread_run = True  # 循环执行条件
+        self.thread = threading.Thread(target=self.control)  # 创建线程，并指定目标函数
+        self.thread.daemon = True  # 设置为守护线程（可选）
+        self.thread.start()
+
+    def control(self):
+        last_room_pos = []
+        hero_track = deque()
+        hero_track.appendleft([0, 0])
+        # 执行游戏逻辑
+        while self.thread_run:
+            queue = self.adb.infer_queue
+            if queue.empty():
+                time.sleep(0.001)
+                continue
+            # 获取推理结果
+            image, result = queue.get()
+            # 初始化字典，键为标签名称，值为空列表
+            output_dict = {label: [] for label in self.adb.yolo.labels}
+            # 获取分类字典
+            annotate_output_with_labels(result, output_dict, self.adb.yolo.labels)
+            result = output_dict
+            hero = result["hero"]
+            monster = result["monster"]
+            # 获取当前房间下应该进入的门
+            if 0 <= self.room_index < len(self.map_gate):
+                self.next_room_direction = self.map_gate[self.room_index]
+            gate = result[get_door_coordinate_by_direction(self.next_room_direction)]
+            go = result["go"]
+            item = result["item"]
+            guide = result["guide"]
+            card = result["card"]
+            again = result["again"]
+            comeback = result["comeback"]
+            zeroPL = result["zeroPL"]
+            repair = result["repair"]
+            if is_image_almost_black(image):
+                if self.pre_state == False:
+                    logger.info("过图了！")
+                    self.kashi = 0
+                    last_room_pos = hero_track[0]
+                    hero_track = deque()
+                    hero_track.appendleft([1 - last_room_pos[0], 1 - last_room_pos[1]])
+                    self.hero_ctrl.reset()
+                    self.pre_state = True
+                else:
+                    continue
+            if self.pre_state == True:
+                # 记录房间号
+                if len(hero) > 0:
+                    self.room_index += 1
+                    self.pre_state = False
+                    logger.info(f"记录房间号: {self.room_index}")
+                else:
+                    continue
+            # 翻盘
+            if len(card) >= 8:
+                logger.info("翻盘")
+                self.hero_ctrl.reset()
+                time.sleep(1)
+                self.adb.touch([0.7 * image.shape[1], 0.25 * image.shape[0]])
+                self.detect_retry = True
+                time.sleep(7)
+            # 计算英雄位置
+            self.calculate_hero_pos(hero_track, hero)
+
+            # 如果有怪物
+            if len(monster) > 0:
+                logger.info(f"有怪物")
+                close_monster, distance = find_close_point_to_box(
+                    monster, hero_track[0]
+                )
+                angle = calculate_point_to_box_angle(hero_track[0], close_monster)
+                close_monster_point = calculate_center(close_monster)
+                self.hero_ctrl.killMonsters(angle, self.room_index, hero_track[0], close_monster_point)
+            # 如果有物品
+            elif len(item) > 0:
+                logger.info("有物品")
+                if len(gate) > 0:
+                    close_gate, distance = find_close_point_to_box(gate, hero_track[0])
+                    farthest_item, distance = find_farthest_box(item, close_gate)
+                    angle = calculate_point_to_box_angle(hero_track[0], farthest_item)
+                else:
+                    close_item, distance = find_close_point_to_box(item, hero_track[0])
+                    angle = calculate_point_to_box_angle(hero_track[0], close_item)
+                # self.hero_ctrl.attack(False)
+                self.hero_ctrl.moveV2(angle)
+            # 修理装备
+            elif len(repair) > 0 and repair[0][4] > 0.8:
+                logger.info("修理装备")
+                self.hero_ctrl.reset()
+                self.adb.touch(get_dom_xy_px(repair[0], image), 0.2)
+                time.sleep(1)
+                self.adb.touch(repair_confirm, 0.3)
+                time.sleep(1)
+                self.adb.touch([0,0])
+            # 发现引导位 并且还没到过狮子头房间 则当前房间为狮子头的前一个房间
+            elif len(guide) > 0 and guide[0][4] > 0.8 and self.room_index < 4:
+                logger.info("发现引导位 并且还没到过狮子头房间")
+                self.room_index = 4
+                continue
+            # 狮子头前一个房间先找引导位
+            elif len(guide) > 0 and self.room_index == 4 and len(gate) < 1:
+                logger.info("找引导位")
+                close_guide, distance = find_closest_or_second_closest_box(
+                    guide, hero_track[0]
+                )
+                angle = calculate_point_to_box_angle(hero_track[0], close_guide)
+                # time.sleep(0.1)
+                self.hero_ctrl.moveV2(angle, 0.2)
+            # 如果有门
+            elif len(gate) > 0:
+                logger.info(f"记录门: {self.next_room_direction}")
+                if len(guide) > 0 and self.room_index == 4:
+                    continue
+                # if(self.room_index == 4):
+                #     self.hero_ctrl.move(300, 0.3)
+                #     time.sleep(1)
+                #     self.hero_ctrl.move(180, 1.5)
+                #     continue
+                if self.next_room_direction == "left":  # 左门
+                    close_gate, distance = find_close_point_to_box(gate, hero_track[0])
+                    angle = calculate_gate_angle(hero_track[0], close_gate)
+                    # 如果在执行普通攻击 则结束普通攻击
+                    # self.ctrl.attack(False)
+                else:
+                    close_gate, distance = find_close_point_to_box(gate, hero_track[0])
+                    angle = calculate_point_to_box_angle(hero_track[0], close_gate)
+                    # self.ctrl.attack(False)
+                self.hero_ctrl.moveV2(angle)
+            # 如果有箭头
+            elif (len(go) > 0 and self.room_index != 4) or (
+                len(go) > 0 and self.kashi > 300
+            ):
+                logger.info("有箭头")
+                close_arrow, distance = find_closest_or_second_closest_box(
+                    go, hero_track[0]
+                )
+                angle = calculate_point_to_box_angle(hero_track[0], close_arrow)
+                self.hero_ctrl.moveV2(angle)
+            # pl已刷完 返回城镇
+            elif len(comeback) > 0 and len(zeroPL) > 0 and zeroPL[0][4] > 0.9:
+              logger.info("pl已刷完 返回城镇")
+              self.thread_run = False
+              self.adb.touch(get_dom_xy_px(find_highest_confidence(comeback), image), 0.2)
+              time.sleep(10)
+              self.next()
+            # 重新挑战
+            elif self.detect_retry == True:
+                logger.info("重新挑战")
+                if len(item) > 0 or len(again) < 1:
+                    continue
+                else:
+                    self.hero_ctrl.reset()
+                    time.sleep(1)
+                    # 重新挑战
+                    self.adb.touch(
+                        get_dom_xy_px(find_highest_confidence(again), image), 0.2
+                    )
+                    time.sleep(0.5)
+                    self.adb.touch(again_start_confirm, 0.2)
+                    time.sleep(3)
+                    self.hero_ctrl.useSkills = {}
+                    self.next_room_direction = "down"
+                    self.detect_retry = False
+                    self.room_index = 0
+                    hero_track = deque()
+                    hero_track.appendleft([0, 0])
+            # 无目标
+            else:
+                logger.info("无目标")
+                self.kashi += 1
+                if self.kashi % 50 == 0:
+                    if self.room_index == 4:
+                        angle = calculate_angle_to_box(hero_track[0], [0.25, 0.6])
+                    else:
+                        angle = calculate_angle_to_box(hero_track[0], [0.5, 0.75])
+                    self.hero_ctrl.moveV2(0)
+                    self.hero_ctrl.moveV2(angle, 0.2)
 
     def random_move(self):
         """
@@ -155,241 +481,21 @@ class GameAction:
         :return:
         """
         logger.info("随机移动一下")
-        self.hero_ctrl.move(random.randint(0, 360), 0.5)
+        self.hero_ctrl.moveV2(random.randint(0, 360))
 
-    def get_map_info(self, frame=None, show=False):
-        """
-        获取当前地图信息
-        :return:
-        """
-        if sys.platform.startswith("win"):
-            frame = self.adb.last_screen if frame is None else frame
-        else:
-            frame = self.adb.frame_queue.get(timeout=1) if frame is None else frame
-        result = self.yolo(frame)
-        self.adb.picture_frame(frame, result)
-
-        lable_list = [
-            line.strip()
-            for line in open(
-                os.path.join(PathManager.MODEL_PATH, "new.txt")
-            ).readlines()
-        ]
-        result_dict = {}
-        for lable in lable_list:
-            result_dict[lable] = []
-
-        for detection in result:
-            label = GameAction.LABLE_INDEX.get(detection.label)
-            if label in result_dict:
-                result_dict[label].append(detection)
-
-        final_result = {}
-        for label, objects in result_dict.items():
-            count = len(objects)
-            bottom_centers = [get_detect_obj_bottom(obj) for obj in objects]
-            final_result[label] = {
-                "count": count,
-                "objects": objects,
-                "bottom_centers": bottom_centers,
-            }
-
-        return final_result
-
-    def get_items(self):
-        """
-        捡材料
-        :return:
-        """
-        logger.info("开始捡材料")
-        start_move = False
-        while True:
-            map_info = self.get_map_info(show=True)
-            itme_list = self.is_exist_item(map_info)
-            if not itme_list:
-                logger.info("材料全部捡完")
-                self.adb.touch_end()
-                return True
-            else:
-                if map_info["hero"]["count"] != 1:
-                    self.random_move()
-                    continue
-                else:
-                    # 循环捡东西
-                    hx, hy = map_info["hero"]["bottom_centers"][0]
-                    closest_item = find_nearest_target_to_the_hero((hx, hy), itme_list)
-                    angle = calc_angle((hx, hy), closest_item)
-                    if not start_move:
-                        self.hero_ctrl.touch_roulette_wheel()
-                        start_move = True
-                    else:
-                        self.hero_ctrl.swipe_roulette_wheel(angle)
-
-    @staticmethod
-    def is_exist_monster(map_info):
-        """
-        判断房间是否存在怪物,如果存在怪物就把怪物坐标返回去，否则返回空
-        :return:
-        """
-        if (
-            map_info["Monster"]["count"]
-            and map_info["Monster_ds"]["count"]
-            and map_info["Monster_szt"]["count"] == 0
-        ):
-            return []
-        else:
-            monster = []
-            if map_info["Monster"]["count"] > 0:
-                monster.extend(map_info["Monster"]["bottom_centers"])
-            if map_info["Monster_ds"]["count"] > 0:
-                monster.extend(map_info["Monster_ds"]["bottom_centers"])
-            if map_info["Monster_szt"]["count"] > 0:
-                monster.extend(map_info["Monster_szt"]["bottom_centers"])
-            return monster
-
-    @staticmethod
-    def is_exist_item(map_info):
-        """
-        判断房间是否存在材料
-        :return:
-        """
-        if map_info["equipment"]["count"] == 0:
-            return []
-        else:
-            return map_info["equipment"]["bottom_centers"]
-
-    @staticmethod
-    def is_exist_reward(map_info):
-        """
-        判断是否存在翻牌奖励
-        :return:
-        """
-        if map_info["card"]["count"] == 0:
-            return []
-        else:
-            return map_info["card"]["bottom_centers"]
-
-    def is_allow_move(self, map_info):
-        """
-        判断是否满足移动条件，如果不满足返回原因
-        :return:
-        """
-        if self.is_exist_monster(map_info):
-            logger.info("怪物未击杀完毕，不满足过图条件,结束跑图")
-            return False, "怪物未击杀"
-        if self.is_exist_item(map_info):
-            logger.info("存在没检的材料，不满足过图条件,结束跑图")
-            return False, "存在没检的材料"
-        return True, ""
-
-    def mov_to_next_room(self, direction=None):
-        """
-        移动到下一个房间
-        :param direction:
-        :return:
-        """
-        logger.info("移动到下一个房间")
-
-        start_move = False
-        hlx, hly = 0, 0
-        move_count = 0
-        # 执行跑图逻辑
-        while True:
-            screen = self.hero_ctrl.adb.last_screen
-            # 下一帧未生成 或 不存在 退出循环
-            if screen is None:
-                continue
-
-            ada_image = cv.adaptiveThreshold(
-                cv.cvtColor(screen, cv.COLOR_BGR2GRAY),
-                255,
-                cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv.THRESH_BINARY_INV,
-                13,
-                3,
-            )
-            # 屏幕变黑色 则认为过图成功
-            if np.sum(ada_image) == 0:
-                logger.info("过图成功")
-                self.adb.touch_end()
-                self.mov_to_next_room()
-                return True
-
-            # 获取当前地图信息
-            map_info = self.get_map_info(screen, show=True)
-            # 判断是否满足进入下一个房间的条件
-            conditions, reason = self.is_allow_move(map_info)
-            # 不满足条件 返回 False 及 原因
-            if not conditions:
-                self.adb.touch_end()
-                return False, reason
-
-            # 如果没有找到英雄 则随机移动 并退出当前循环
-            if map_info["hero"]["count"] == 0:
-                logger.info("没有找到英雄")
-                self.random_move()
-                continue
-            # 获取英雄坐标
-            else:
-                hx, hy = map_info["hero"]["bottom_centers"][0]
-
-            # 没有箭头 随机移动一下
-            if map_info["go"]["count"] == 0:
-                logger.info("没有找到箭头标记")
-                # 尝试查找大箭头 go_u 或 go_d
-                alternative_marks = None
-                if map_info["go_u"]["count"] > 0:
-                    alternative_marks = map_info["go_u"]["bottom_centers"]
-                    logger.info("使用 go_u 标记")
-                elif map_info["go_d"]["count"] > 0:
-                    alternative_marks = map_info["go_d"]["bottom_centers"]
-                    logger.info("使用 go_d 标记")
-                elif map_info["go_r"]["count"] > 0:
-                    alternative_marks = map_info["go_r"]["bottom_centers"]
-                    logger.info("使用 go_r 标记")
-
-                if alternative_marks:
-                    # 如果找到替代的标记，使用这些标记
-                    marks = alternative_marks
-                else:
-                    # 如果没有找到替代标记，执行随机移动
-                    self.random_move()
-                    continue
-            # 使用小箭头坐标
-            else:
-                marks = map_info["go"]["bottom_centers"]
-            closest_mark = find_nearest_target_to_the_hero((hx, hy), marks)
-            # 没有坐标异常时退出
-            if closest_mark is None:
-                logger.info("没有找到距离英雄最近的坐标")
-                continue
-            mx, my = closest_mark
-
-            # 计算出英雄和目标的角度
-            angle = calc_angle((hx, hy), (mx, my))
-
-            # 按压轮盘
-            if not start_move:
-                self.hero_ctrl.touch_roulette_wheel()
-                start_move = True
-            # 拖动轮盘
-            else:
-                self.hero_ctrl.swipe_roulette_wheel(angle)
+    def calculate_hero_pos(self, hero_track: deque, result):
+        if len(result) == 0:
+            None
+        elif len(result) == 1:
+            hero_track.appendleft(calculate_center(result[0]))
+        elif len(result) > 1:
+            for box in result:
+                if calculate_distance(box, hero_track[0]) < 0.1:
+                    hero_track.appendleft(box)
+                    return
+                hero_track.appendleft(hero_track[0])
 
 
 if __name__ == "__main__":
     adb = ScrcpyADB()
-    # 将 display_queue_frames 放入单独的线程中执行
-    # thread = threading.Thread(target=adb.display_queue_frames)
-    # thread.start()
-
     action = GameAction("hong_yan", adb)
-    # for i in range(5):
-    action.mov_to_next_room()
-
-    # adb.display_queue_frames()
-
-    # action.mov_to_next_room()
-    #     # action.get_items()
-    #     time.sleep(3)
-    # print(calc_angle((472, 1328), (788, 1655)))
